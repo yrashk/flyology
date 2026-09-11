@@ -619,16 +619,18 @@ begin
          "unresolved throttle event did not retain the fallback window");
    end;
 
-   --  Two pauses share one cumulative budget. The first recovers with ample
-   --  scheduling margin after consuming part of it. The second delayed read
-   --  fits a fresh budget but exceeds the cumulative remainder, so it must use
-   --  the Observe fallback while retaining its affected one-sample window.
+   --  Two pauses share one cumulative budget. The test clock fixes their
+   --  accounted time while real pacing leaves the wait open to external
+   --  suspension. The second delayed read fits a fresh budget but exceeds the
+   --  cumulative remainder, so it must use the Observe fallback while retaining
+   --  its affected one-sample window.
    Hooks.Reset;
    Hooks.Reject_Read (6);
    Hooks.Reject_Read (12);
    Hooks.Delay_Read (7, 100);
    Hooks.Delay_Read (8, 100);
    Hooks.Delay_Read (13, 350);
+   Hooks.Use_Test_Clock;
    declare
       Result : Measurement;
       Report : Environment_Report;
@@ -646,11 +648,10 @@ begin
                  Maximum_Pause_Time => 0.500)),
          Result);
       Report := Environment (Result);
-      Check
-        (Report.Condition_Pauses = 2
-         and then Report.Condition_Budget_Expired
-         and then Report.Condition_Fallback_Used,
-         "separate pauses did not consume one cumulative budget");
+      Check (Hooks.Test_Clock_Now = 551_000_000, "condition pauses did not consume the scripted test time");
+      Check (Report.Condition_Pauses = 2, "cumulative condition budget did not reach the second pause");
+      Check (Report.Condition_Budget_Expired, "second condition pause did not exhaust the cumulative budget");
+      Check (Report.Condition_Fallback_Used, "expired condition budget did not use its fallback");
       Check
         (Report.Affected_Units = 2 and then Report.Recollected_Units = 1,
          "cumulative fallback did not distinguish recollected and retained windows");

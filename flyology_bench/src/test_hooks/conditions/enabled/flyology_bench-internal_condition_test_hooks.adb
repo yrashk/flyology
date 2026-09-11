@@ -2,6 +2,7 @@ with Ada.Strings.Unbounded;
 
 package body Flyology_Bench.Internal_Condition_Test_Hooks is
    package US renames Ada.Strings.Unbounded;
+   use type Interfaces.Unsigned_64;
 
    Maximum_Reads : constant := 128;
    type Rejection_Map is array (Positive range 1 .. Maximum_Reads) of Boolean;
@@ -16,6 +17,8 @@ package body Flyology_Bench.Internal_Condition_Test_Hooks is
    Throttle_From          : Natural := 0;
    Reads                  : Natural := 0;
    Profile_Reads          : Natural := 0;
+   Test_Clock_Enabled     : Boolean := False;
+   Test_Time_NS           : Interfaces.Unsigned_64 := 0;
    Fixture_Active         : Boolean := False;
    Fixture_Sysfs_Root     : US.Unbounded_String;
    Fixture_PPD_Profile    : US.Unbounded_String;
@@ -40,6 +43,8 @@ package body Flyology_Bench.Internal_Condition_Test_Hooks is
       Throttle_From := 0;
       Reads := 0;
       Profile_Reads := 0;
+      Test_Clock_Enabled := False;
+      Test_Time_NS := 0;
       Fixture_Active := False;
       Fixture_Sysfs_Root := US.Null_Unbounded_String;
       Fixture_PPD_Profile := US.Null_Unbounded_String;
@@ -100,6 +105,26 @@ package body Flyology_Bench.Internal_Condition_Test_Hooks is
       end if;
       Read_Delays_MS (Index) := Milliseconds;
    end Delay_Read;
+
+   procedure Use_Test_Clock is
+   begin
+      Test_Clock_Enabled := True;
+      Test_Time_NS := 0;
+   end Use_Test_Clock;
+
+   function Test_Clock_Active return Boolean
+   is (Test_Clock_Enabled);
+
+   function Test_Clock_Now return Interfaces.Unsigned_64
+   is (Test_Time_NS);
+
+   procedure Advance_Test_Clock (Nanoseconds : Interfaces.Unsigned_64) is
+   begin
+      if Test_Time_NS > Interfaces.Unsigned_64'Last - Nanoseconds then
+         raise Constraint_Error with "condition test clock overflow";
+      end if;
+      Test_Time_NS := Test_Time_NS + Nanoseconds;
+   end Advance_Test_Clock;
 
    procedure Use_Linux_Fixture
      (Sysfs_Root                : String;
@@ -185,6 +210,9 @@ package body Flyology_Bench.Internal_Condition_Test_Hooks is
          return;
       end if;
       if Reads <= Maximum_Reads and then Read_Delays_MS (Reads) > 0 then
+         if Test_Clock_Enabled then
+            Advance_Test_Clock (Interfaces.Unsigned_64 (Read_Delays_MS (Reads)) * 1_000_000);
+         end if;
          delay Duration (Read_Delays_MS (Reads)) / 1_000.0;
       end if;
       if Include_Profile then

@@ -1,4 +1,5 @@
 with Flyology_Bench.Internal_Conditions;
+with Interfaces;
 
 private package Flyology_Bench.Internal_Condition_Test_Hooks is
 
@@ -14,6 +15,14 @@ private package Flyology_Bench.Internal_Condition_Test_Hooks is
      (Index : Positive; Profile : Process_Performance_Profile);
    procedure Begin_Throttle_Event (Index : Positive);
    procedure Delay_Read (Index : Positive; Milliseconds : Positive);
+
+   --  Use explicit nanosecond accounting for condition waits while retaining
+   --  their real pacing delays.
+   procedure Use_Test_Clock;
+   function Test_Clock_Active return Boolean;
+   function Test_Clock_Now return Interfaces.Unsigned_64;
+   procedure Advance_Test_Clock (Nanoseconds : Interfaces.Unsigned_64);
+
    procedure Use_Linux_Fixture
      (Sysfs_Root                : String;
       PPD_Profile               : String;
