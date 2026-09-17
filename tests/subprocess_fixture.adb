@@ -126,7 +126,7 @@ begin
       delay 60.0;
    elsif Mode = "short-sleep" then
       Write_All (1, "ready");
-      delay 0.2;
+      delay 0.5;
    elsif Mode = "large" then
       declare
          Output_Chunk : constant String (1 .. 4_096) := (others => 'O');

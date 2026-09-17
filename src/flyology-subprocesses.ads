@@ -135,8 +135,10 @@ package Flyology.Subprocesses is
    --  At most one operation may be active on each standard stream. Operations
    --  on distinct streams may run concurrently. Serialize every explicit
    --  stream close and owner finalization against all active operations.
-   --  Declare owners at a structured scope; finalization can wait indefinitely
-   --  for a kernel task stuck in an uninterruptible state.
+   --  Declare owners at a structured scope. If hard termination fails during
+   --  finalization, the reaper retains its own exit state until natural exit.
+   --  A successful hard termination can still wait for a kernel task stuck in
+   --  an uninterruptible state.
    type Process is new Ada.Finalization.Limited_Controlled with private;
 
    --  Spawn Command and transfer the parent ends of stdin, stdout, and stderr
@@ -311,8 +313,9 @@ package Flyology.Subprocesses is
    --  group, reaps the root, closes output pipes, and joins the native reaper.
    --  If hard termination fails, Close raises promptly and retains the open
    --  process owner and reaper so the caller can retry after the failure is
-   --  resolved. Repeated successful calls are harmless. Finalization still
-   --  waits for natural root exit when hard termination remains unavailable.
+   --  resolved. Repeated successful calls are harmless. If finalization cannot
+   --  hard-terminate the group, it closes the pipes and leaves the reaper to
+   --  finish independently after natural root exit.
    --  @param Child Process owner to release
    --  @exception Process_Error Process cleanup or observation fails
    procedure Close (Child : in out Process);
@@ -366,13 +369,22 @@ private
    end Reaper_Task;
    type Reaper_Access is access Reaper_Task;
 
+   type Orphan_Node;
+   type Orphan_Access is access Orphan_Node;
+   type Orphan_Node is record
+      Reaper : Reaper_Access := null;
+      State  : Exit_Control_Access := null;
+      Next   : Orphan_Access := null;
+   end record;
+
    type Process is new Ada.Finalization.Limited_Controlled with record
       Pid_Value  : Interfaces.C.int := -1;
       Input_FD   : Flyology.IO.Descriptor := Flyology.IO.Invalid_Descriptor;
       Output_FD  : Flyology.IO.Descriptor := Flyology.IO.Invalid_Descriptor;
       Error_FD   : Flyology.IO.Descriptor := Flyology.IO.Invalid_Descriptor;
-      Exit_State : aliased Exit_Control;
+      Exit_State : Exit_Control_Access := null;
       Reaper     : Reaper_Access := null;
+      Orphan     : Orphan_Access := null;
    end record;
 
    --  Internal write seam used by the Capture child package. Reader_Closed

@@ -17,6 +17,81 @@ package body Flyology.Subprocesses is
    use type CS.chars_ptr;
 
    procedure Free_Reaper is new Ada.Unchecked_Deallocation (Reaper_Task, Reaper_Access);
+   procedure Free_Exit_State is new Ada.Unchecked_Deallocation (Exit_Control, Exit_Control_Access);
+
+   procedure Free_Orphan is new Ada.Unchecked_Deallocation (Orphan_Node, Orphan_Access);
+
+   protected Orphans is
+      procedure Add (Item : Orphan_Access);
+      procedure Take_Completed (Item : out Orphan_Access);
+      function Pending return Boolean;
+   private
+      Head : Orphan_Access := null;
+   end Orphans;
+
+   protected body Orphans is
+      procedure Add (Item : Orphan_Access) is
+      begin
+         Item.Next := Head;
+         Head := Item;
+      end Add;
+
+      procedure Take_Completed (Item : out Orphan_Access) is
+         Previous : Orphan_Access := null;
+         Current  : Orphan_Access := Head;
+      begin
+         Item := null;
+         while Current /= null loop
+            if Current.Reaper'Terminated then
+               Item := Current;
+               if Previous = null then
+                  Head := Current.Next;
+               else
+                  Previous.Next := Current.Next;
+               end if;
+               Item.Next := null;
+               return;
+            end if;
+            Previous := Current;
+            Current := Current.Next;
+         end loop;
+      end Take_Completed;
+
+      function Pending return Boolean
+      is (Head /= null);
+   end Orphans;
+
+   --  One native collector reclaims abandoned reapers after their child exits.
+   task Orphan_Collector is
+      pragma Task_Info (Flyology.Native_Task);
+      entry Wake;
+   end Orphan_Collector;
+
+   task body Orphan_Collector is
+      Item : Orphan_Access;
+   begin
+      loop
+         Orphans.Take_Completed (Item);
+         if Item /= null then
+            Free_Reaper (Item.Reaper);
+            Item.State.Release;
+            Free_Exit_State (Item.State);
+            Free_Orphan (Item);
+         elsif Orphans.Pending then
+            select
+               accept Wake;
+            or
+               delay 0.01;
+            end select;
+         else
+            select
+               accept Wake;
+            or
+               terminate;
+            end select;
+         end if;
+      end loop;
+   end Orphan_Collector;
 
    type Descriptor_Pair is array (Natural range 0 .. 1) of aliased C.int with Convention => C;
    type Chars_Ptr_Array is array (Natural range <>) of aliased CS.chars_ptr with Convention => C;
@@ -479,6 +554,7 @@ package body Flyology.Subprocesses is
       end if;
 
       begin
+         Child.Exit_State := new Exit_Control;
          Child.Exit_State.Prepare;
       exception
          when others =>
@@ -492,6 +568,10 @@ package body Flyology.Subprocesses is
                   null;
                end loop;
             end;
+            if Child.Exit_State /= null then
+               Child.Exit_State.Release;
+               Free_Exit_State (Child.Exit_State);
+            end if;
             Cleanup_Ends;
             raise Spawn_Error with "cannot create subprocess exit readiness source";
       end;
@@ -508,12 +588,13 @@ package body Flyology.Subprocesses is
       Stderr_Ends (0) := -1;
 
       begin
+         Child.Orphan := new Orphan_Node;
          if Flyology.Subprocess_Test_Hooks.Enabled
            and then Flyology.Subprocess_Test_Hooks.Fail_Reaper_Allocation
          then
             raise Storage_Error with "injected subprocess reaper failure";
          end if;
-         Child.Reaper := new Reaper_Task (Pid, Child.Exit_State'Unchecked_Access);
+         Child.Reaper := new Reaper_Task (Pid, Child.Exit_State);
       exception
          when others =>
             declare
@@ -529,7 +610,9 @@ package body Flyology.Subprocesses is
             Close_Descriptor (Child.Input_FD);
             Close_Descriptor (Child.Output_FD);
             Close_Descriptor (Child.Error_FD);
+            Free_Orphan (Child.Orphan);
             Child.Exit_State.Release;
+            Free_Exit_State (Child.Exit_State);
             Child.Pid_Value := -1;
             raise Spawn_Error with "cannot allocate subprocess reaper";
       end;
@@ -853,6 +936,8 @@ package body Flyology.Subprocesses is
          Free_Reaper (Child.Reaper);
       end if;
       Child.Exit_State.Release;
+      Free_Exit_State (Child.Exit_State);
+      Free_Orphan (Child.Orphan);
       Child.Pid_Value := -1;
    end Release_Process;
 
@@ -888,15 +973,25 @@ package body Flyology.Subprocesses is
          Close (Child);
       exception
          when others =>
-            --  Finalization cannot leave a reaper borrowing this object's
-            --  exit state. If signaling failed, join even when exit readiness
-            --  itself is unusable; natural exit may take an unlimited time.
             if Is_Open (Child) then
+               Close_Standard_Input (Child);
+               Close_Standard_Output (Child);
+               Close_Standard_Error (Child);
+               --  The preallocated node and heap-backed exit state outlive
+               --  this Process. The collector frees both after task exit.
+               Child.Orphan.Reaper := Child.Reaper;
+               Child.Orphan.State := Child.Exit_State;
+               Orphans.Add (Child.Orphan);
+               Child.Orphan := null;
+               Child.Reaper := null;
+               Child.Exit_State := null;
+               Child.Pid_Value := -1;
+               --  A failed wake cannot give ownership back to Process after
+               --  the collector accepted the orphan.
                begin
-                  Close_Standard_Input (Child);
-                  Release_Process (Child);
+                  Orphan_Collector.Wake;
                exception
-                  when others =>
+                  when Tasking_Error =>
                      null;
                end;
             end if;

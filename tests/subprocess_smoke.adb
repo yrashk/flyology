@@ -407,9 +407,13 @@ procedure Subprocess_Smoke is
          end;
          Set_Fail_Group_Signal (0);
          Assert
-           (Ada.Real_Time.Clock - Started >= Ada.Real_Time.Milliseconds (100),
-            "finalization released the reaper before natural exit");
-         Assert (Open_FD_Count = Before, "failed-kill finalization leaked descriptors");
+           (Ada.Real_Time.Clock - Started < Ada.Real_Time.Milliseconds (250),
+            "failed-kill finalization waited for natural exit");
+         for Attempt in 1 .. 200 loop
+            exit when Open_FD_Count = Before;
+            delay 0.01;
+         end loop;
+         Assert (Open_FD_Count = Before, "orphan reaper retained exit readiness descriptors");
       exception
          when others =>
             Set_Fail_Group_Signal (0);

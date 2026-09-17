@@ -2111,8 +2111,10 @@ hard termination when the grace interval expires. `Close` and
 finalization hard-terminate an unjoined group, reap the root, close every pipe,
 and join the reaper. If hard termination fails, explicit `Close` reports the
 error promptly and retains process ownership for a later retry. Finalization
-still waits for natural root exit when hard termination remains unavailable,
-since the reaper borrows state in the finalizing process object.
+closes the pipes and returns when hard termination fails. The native reaper
+retains separate exit state until the root exits naturally; a collector then
+releases its task and readiness source. A successful hard termination can
+still wait for a root stuck in an uninterruptible kernel state.
 
 `Flyology.Subprocesses.Capture.Run` is the bounded structured layer. It
 interleaves stdin writes with stdout and stderr reads under one monotonic
@@ -2127,7 +2129,8 @@ the parent descriptors before the original exception propagates. Cleanup
 failures are suppressed in that path, and cleanup can extend delivery beyond
 the command-progress deadline.
 
-Each live process currently consumes one native reaper task and pthread. This
+Each live process currently consumes one native reaper task and pthread. One
+native collector task reclaims reapers left alive by failed finalization. This
 initial backend is intended for bounded subprocess populations. A shared
 high-density reaper remains a separate design boundary.
 
